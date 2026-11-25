@@ -1,7 +1,7 @@
-strategy,months,common_opportunities,common_missing_exclusions,closed,mean_trade_net_pct,mean_opportunity_net_pct
-fundamentals,1,0,0,0,,
-fundamentals_and_morning,1,0,0,0,,
-fundamentals,3,0,0,0,,
-fundamentals_and_morning,3,0,0,0,,
-fundamentals,6,0,0,0,,
-fundamentals_and_morning,6,0,0,0,,
+portfolio_delta_jpy,portfolio_return_difference_pp,phase,months,candidates,overlap_groups,common_completed,different_decisions_observed,unknown_decisions,differing_with_outcome,improvement_jpy,deterioration_jpy,total_paired_delta_jpy,status
+,,development,3,1,1,0,0,1,0,,,,not_evaluated
+,,evaluation,3,1,1,0,0,1,0,,,,not_evaluated
+,,development,1,1,1,0,0,1,0,,,,not_evaluated
+,,evaluation,1,1,1,0,0,1,0,,,,not_evaluated
+,,development,6,0,0,0,0,0,0,,,,not_evaluated
+,,evaluation,6,1,1,0,0,1,0,,,,not_evaluated

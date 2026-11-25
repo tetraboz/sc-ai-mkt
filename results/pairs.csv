@@ -1,0 +1,6 @@
+phase,months,id,target,different_first_decision,A_status,B_status,A_pnl,B_pnl,delta_jpy
+development,3,2025-11-05-5367,2026-02-05,,sold,missing_morning,8252.200000000004,,
+evaluation,3,2026-05-07-5367,2026-08-07,,sold,missing_morning,40004.0,,
+development,1,2025-11-05-5367,2025-12-05,,sold,missing_morning,1166.4000000000015,,
+evaluation,1,2026-05-07-5367,2026-06-08,,sold,missing_morning,40802.399999999994,,
+evaluation,6,2026-05-07-5367,2026-11-09,,sold,missing_morning,16753.59999999999,,

@@ -1,15 +1,33 @@
 {
-  "start_decision_jst": "2025-11-01",
-  "end_decision_jst": "2026-05-31",
-  "as_of_jst": "2026-11-24",
-  "decision_time_jst": "10:30",
-  "shares": 100,
-  "max_buy_debit_jpy": 120000,
-  "cost_per_side": 0.002,
-  "calendar": "200A daily timestamps",
-  "eligible_decisions": 13,
-  "morning_comparison": "not_evaluated",
-  "market_surprise_complete_rows": 0,
+  "config": {
+    "initial_cash_jpy": 480000,
+    "order_limit_jpy": 120000,
+    "shares": 100,
+    "cost_per_side": 0.002,
+    "max_decision_sessions": 5,
+    "expire_on_next_financial_event": true,
+    "min_relative_pp_both": 0,
+    "min_open_pct_1000": 0,
+    "min_high_pct_1000": -2,
+    "min_volume_multiple_1000": 1,
+    "primary_months": 3,
+    "secondary_months": [
+      1,
+      6
+    ],
+    "development_start": "2025-11-01",
+    "evaluation_start": "2026-03-01",
+    "last_candidate": "2026-05-31",
+    "as_of": "2026-11-24"
+  },
+  "config_sha256": "2bdd2f963229df05792858444b4641b10e128447aff9cda973a831bce6723cb0",
+  "calendar_sha256": "2340c1418c5adf86be39b65c47616b11887a5d52aceac5b1b31f245951c1cef6",
+  "rules_tried": 1,
+  "threshold_searches": 0,
+  "financial_event_days": 13,
+  "earnings_announcements": 12,
+  "candidate_events": 3,
+  "facts_sha256": "af5bc7041ce9656693910bf94dede62c52c8f4dfe8c6178f63ac1f0a622f0488",
   "daily_sha256": {
     "5381": "89fb81248499ea96a82e1755417f6dfe41d60f2790f63090bd693c13686acaa6",
     "5542": "845135daa8ee1b245096405ab2afafbd077ee1d48830a42eead8e003a4c3a59c",
@@ -17,6 +35,21 @@
     "3446": "3980c670f0d84c2b04034694820ff4cb93464fe17b47eda1411d702755379159",
     "200A": "aecef7093dd1c33a49a40e59bb47834113986eae651ce4d4cf9b52af49218f7a"
   },
-  "fundamentals_sha256": "af5bc7041ce9656693910bf94dede62c52c8f4dfe8c6178f63ac1f0a622f0488",
-  "intraday_sha256": null
+  "intraday_sha256": null,
+  "primary_evaluation": {
+    "portfolio_delta_jpy": null,
+    "portfolio_return_difference_pp": null,
+    "phase": "evaluation",
+    "months": 3,
+    "candidates": 1,
+    "overlap_groups": 1,
+    "common_completed": 0,
+    "different_decisions_observed": 0,
+    "unknown_decisions": 1,
+    "differing_with_outcome": 0,
+    "improvement_jpy": null,
+    "deterioration_jpy": null,
+    "total_paired_delta_jpy": null,
+    "status": "not_evaluated"
+  }
 }

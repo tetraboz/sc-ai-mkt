@@ -152,13 +152,13 @@ def pct(value, reference):
 def morning_features(code, sessions, index, data, intraday):
     day = sessions[index]
     previous = sessions[index - 1] if index else None
-    cutoff = at(day, DECISION)
     series = data[code]
     etf = data[ETF]
     prev_close = previous_close_on_current_basis(series, previous, day)
     etf_prev = previous_close_on_current_basis(etf, previous, day)
     bars = intraday.get(code, {})
     for obs in OBSERVATIONS:
+        cutoff = at(day, obs)
         status, volume, trades = snapshot(bars, day, obs, cutoff)
         etf_status, _, etf_trades = snapshot(intraday.get(ETF, {}), day, obs, cutoff)
         history = []

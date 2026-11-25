@@ -167,8 +167,12 @@ def comparisons(facts):
 
 
 def signal(rows):
+    latest = {}
+    for row in sorted(rows, key=lambda r: r["available_at_jst"]):
+        key = (row["code"], row["period_start"], row["period_end"], row["scope"], row["comparison"])
+        latest[key] = row
     complete = [
-        row for row in rows
+        row for row in latest.values()
         if row.get("eps_delta_jpy") is not None and row.get("op_delta_mjpy") is not None
     ]
     reasons = sorted({row["comparison"] for row in complete

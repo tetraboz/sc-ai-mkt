@@ -1,25 +1,27 @@
 """Event study of four TSE stocks. Run with Python 3.11+."""
+
 import argparse
 import csv
 import hashlib
 import json
 from bisect import bisect_left
 from calendar import monthrange
-from collections import Counter, defaultdict
-from datetime import date, time
+from collections import defaultdict
+from datetime import date, timedelta
 from pathlib import Path
-from statistics import mean, median
+from portfolio import simulate
 
 from fundamentals import comparisons, read_facts, signal
-from market import (DECISION, ETF, STOCKS, at, morning_features, read_daily,
-                    read_intraday, read_sessions)
-
-HORIZONS = (1, 3, 6)
-SHARES = 100
-BUDGET = 120_000
-COST = 0.002
-BASE = "fundamentals"
-PLUS = "fundamentals_and_morning"
+from market import (
+    DECISION,
+    ETF,
+    STOCKS,
+    at,
+    morning_features,
+    read_daily,
+    read_intraday,
+    read_sessions,
+)
 
 
 def write_csv(path, rows):
@@ -37,200 +39,321 @@ def month_later(day, months):
     return date(year, month, min(day.day, monthrange(year, month)[1]))
 
 
-def exit_info(series, entry, close_day, price, minimum_volume=SHARES):
-    if not series.traded(close_day, minimum_volume) or not price:
-        return None, None, None
-    close = series.raw_price(close_day, "close")
-    if close is None:
-        return None, None, None
-    factor = series.factor(entry) / series.factor(close_day)
-    dividends = series.dividends_per_entry_share(entry, close_day)
-    return close, dividends, 100 * ((close * factor * (1 - COST) + dividends) / (price * (1 + COST)) - 1)
-
-
-def morning_signal(rows):
-    fields = ("prev_close_pct", "open_pct", "high_pct", "relative_pp", "volume_multiple")
-    if any(row["stock_status"] != "fresh" or row["etf_status"] != "fresh"
-           or any(row[key] is None for key in fields) for row in rows):
-        return None
+def morning_decision(rows, cfg):
+    reasons = {
+        r[k] for r in rows for k in ("stock_status", "etf_status") if r[k] != "fresh"
+    }
+    required = ("relative_pp", "open_pct", "high_pct", "volume_multiple")
+    if "missing" in reasons or any(r["history_sessions"] < 25 for r in rows):
+        return "missing"
+    if reasons:
+        return "+".join(sorted(reasons))
+    if any(r[k] is None for r in rows for k in required):
+        return "missing"
     nine, ten = rows
-    return (nine["relative_pp"] >= 0 and ten["relative_pp"] >= 0 and ten["open_pct"] >= 0
-            and ten["high_pct"] >= -2 and ten["volume_multiple"] >= 1)
+    passed = (
+        min(nine["relative_pp"], ten["relative_pp"]) >= cfg["min_relative_pp_both"]
+        and ten["open_pct"] >= cfg["min_open_pct_1000"]
+        and ten["high_pct"] >= cfg["min_high_pct_1000"]
+        and ten["volume_multiple"] >= cfg["min_volume_multiple_1000"]
+    )
+    return "buy" if passed else "wait"
 
 
-def first_decision(cutoffs, published):
-    index = bisect_left(cutoffs, published)
-    return index if index < len(cutoffs) else None
+def plan(code, idx, sessions, events, data, bars, cfg, asof, observations):
+    first = None
+    for j in range(idx, min(idx + cfg["max_decision_sessions"], len(sessions))):
+        day = sessions[j]
+        if day > asof:
+            break
+        if j != idx and cfg["expire_on_next_financial_event"] and (code, j) in events:
+            return dict(first=first, status="invalidated")
+        rows = list(morning_features(code, sessions, j, data, bars))
+        decision = morning_decision(rows, cfg)
+        observations.extend(
+            dict(candidate=sessions[idx], day=day, code=code, decision=decision, **r)
+            for r in rows
+        )
+        first = first or decision
+        if decision == "missing":
+            return dict(first=first, status="missing_morning", unknown_day=day)
+        if decision == "buy":
+            return dict(
+                first=first,
+                status="order",
+                signal_day=day,
+                entry=sessions[j + 1] if j + 1 < len(sessions) else None,
+            )
+        if j - idx + 1 == cfg["max_decision_sessions"]:
+            return dict(first=first, status="expired")
+    return dict(first=first, status="right_censored")
 
 
-def summarize(rows):
-    summary = []
-    for group in ("all", *STOCKS):
-        for strategy in (BASE, PLUS):
-            for months in HORIZONS:
-                subset = [r for r in rows if r["strategy"] == strategy
-                          and r["months"] == months and (group == "all" or r["code"] == group)]
-                counts = Counter(r["status"] for r in subset)
-                completed = [r for r in subset if r["status"] == "closed"]
-                summary.append({
-                    "code": group, "strategy": strategy, "months": months,
-                    "opportunities": len(subset), "entries": len(completed) + counts["missing_exit"],
-                    "closed": len(completed),
-                    "missing_exclusions": sum(v for k, v in counts.items() if k.startswith("missing_")),
-                    "missing_financial": counts["missing_financial"],
-                    "missing_morning": counts["missing_morning"],
-                    "missing_entry": counts["missing_entry"], "missing_exit": counts["missing_exit"],
-                    "over_budget": counts["over_budget"],
-                    "no_signal": counts["no_signal"], "morning_filter": counts["morning_filter"],
-                    "mean_net_pct": mean(r["net_pct"] for r in completed) if completed else None,
-                    "median_net_pct": median(r["net_pct"] for r in completed) if completed else None,
-                    "etf_observed": sum(r["etf_net_pct"] is not None for r in completed),
-                    "mean_excess_pp": (mean(r["excess_pp"] for r in completed if r["excess_pp"] is not None)
-                                       if any(r["excess_pp"] is not None for r in completed) else None),
-                })
-    return summary
-
-
-def paired_summary(rows):
-    """Treat skips as cash and omit missing outcomes from both sides."""
-    pairs = defaultdict(dict)
-    for r in rows:
-        if r["morning_eligible"]:
-            pairs[r["code"], r["decision_jst"], r["months"]][r["strategy"]] = r
-    summary = []
-    for months in HORIZONS:
-        subset = [pair for key, pair in pairs.items() if key[2] == months]
-        usable = [p for p in subset if all(not r["status"].startswith("missing_") for r in p.values())]
-        for strategy in (BASE, PLUS):
-            trades = [p[strategy]["net_pct"] for p in usable if p[strategy]["status"] == "closed"]
-            summary.append({
-                "strategy": strategy, "months": months, "common_opportunities": len(subset),
-                "common_missing_exclusions": len(subset) - len(usable),
-                "closed": len(trades),
-                "mean_trade_net_pct": mean(trades) if trades else None,
-                "mean_opportunity_net_pct": sum(trades) / len(usable) if usable else None,
-            })
-    return summary
-
-
-def evaluate(code, index, sessions, data, base_signal, morning, decisions):
-    day = sessions[index]
-    series = data[code]
-    etf = data[ETF]
-    entry = sessions[index + 1] if index + 1 < len(sessions) else None
-    price = series.raw_price(entry, "open")
-    debit = price * SHARES * (1 + COST) if price is not None else None
-    can_fill = debit is not None and series.traded(entry, SHARES)
-    for strategy in (BASE, PLUS):
-        if strategy == PLUS and morning is None:
-            status = "missing_morning"
-        elif base_signal is None:
-            status = "missing_financial"
-        elif not base_signal:
-            status = "no_signal"
-        elif strategy == PLUS and not morning:
-            status = "morning_filter"
-        elif not can_fill:
-            status = "missing_entry"
-        elif debit > BUDGET:
-            status = "over_budget"
-        else:
-            status = "filled"
-
-        for months in HORIZONS:
-            result = {
-                "code": code, "decision_jst": at(day, DECISION).isoformat(),
-                "strategy": strategy, "months": months, "status": status,
-                "morning_eligible": morning is not None, **decisions,
-                "reference_entry_day": entry, "reference_open_jpy": price,
-                "entry_jpy": None, "cash_debit_jpy": None,
-                "exit_day": None, "exit_jpy": None, "dividend_jpy_per_entry_share": None,
-                "net_pct": None, "etf_net_pct": None, "excess_pp": None,
-            }
-            if status == "filled":
-                j = bisect_left(sessions, month_later(entry, months))
-                exit_day = sessions[j] if j < len(sessions) else None
-                close, dividends, net = exit_info(series, entry, exit_day, price)
-                etf_price = etf.raw_price(entry, "open") if etf.traded(entry) else None
-                _, _, benchmark = exit_info(etf, entry, exit_day, etf_price, minimum_volume=1)
-                result.update(status="closed" if net is not None else "missing_exit",
-                              entry_jpy=price, cash_debit_jpy=round(debit, 2),
-                              exit_day=exit_day, exit_jpy=close, dividend_jpy_per_entry_share=dividends,
-                              net_pct=net, etf_net_pct=benchmark,
-                              excess_pp=net - benchmark if net is not None and benchmark is not None else None)
-            yield result
+def profile(events):
+    """Count connected calendar intervals, not independent observations."""
+    groups = 0
+    end = None
+    for e in sorted(events, key=lambda e: e["day"]):
+        if end is None or e["day"] > end:
+            groups += 1
+        end = max(end or e["day"], e["target"] or date.max)
+    return groups
 
 
 def run(args):
-    data = {code: read_daily(args.daily / f"{code}-daily.json", code) for code in (*STOCKS, ETF)}
-    calendar = read_sessions(args.calendar) if args.calendar else sorted(data[ETF].bars)
-    sessions = [day for day in calendar if day <= args.as_of]
-    if not sessions:
-        raise ValueError("No exchange sessions at or before --as-of")
+    cfg = json.loads(args.config.read_text())
+    start, split, end, asof = (
+        date.fromisoformat(cfg[k])
+        for k in ("development_start", "evaluation_start", "last_candidate", "as_of")
+    )
+    if (
+        not start < split <= end <= asof
+        or min(
+            cfg["max_decision_sessions"],
+            cfg["shares"],
+            cfg["initial_cash_jpy"],
+            cfg["order_limit_jpy"],
+        )
+        <= 0
+        or not 0 <= cfg["cost_per_side"] < 1
+    ):
+        raise ValueError("Invalid date, cost, capital or waiting window")
+    sessions = read_sessions(args.calendar)
+    if not sessions or sessions[0] > start or sessions[-1] < asof:
+        raise ValueError("Exchange calendar must cover the full observation period")
     cutoffs = [at(day, DECISION) for day in sessions]
-    facts = read_facts(args.facts)
-    facts = [f for f in facts if f.timestamp <= cutoffs[-1]]
-    signals = defaultdict(list)
-    financial_rows = []
-    for row in comparisons(facts):
-        idx = first_decision(cutoffs, row["available_at_jst"])
-        if idx is None or not args.start <= sessions[idx] <= args.end:
+    data = {c: read_daily(args.daily / f"{c}-daily.json", c) for c in (*STOCKS, ETF)}
+    bars = read_intraday(args.intraday) if args.intraday else {}
+    events = defaultdict(list)
+    financial = []
+    for row in comparisons(read_facts(args.facts)):
+        idx = bisect_left(cutoffs, row["available_at_jst"])
+        if idx >= len(sessions) or not start <= sessions[idx] <= asof:
             continue
-        financial_rows.append({**row, "decision_jst": cutoffs[idx]})
-        signals[row["code"], idx].append(row)
-
-    intraday = read_intraday(args.intraday) if args.intraday else {}
-    morning_rows = []
-    results = []
-    for (code, idx), rows in sorted(signals.items(), key=lambda pair: (pair[0][1], pair[0][0])):
-        base, reasons = signal(rows)
-        observations = list(morning_features(code, sessions, idx, data, intraday))
-        morning = morning_signal(observations)
-        decision = cutoffs[idx].isoformat()
-        morning_rows.extend({"code": code, "decision_jst": decision, **row} for row in observations)
-        results.extend(evaluate(code, idx, sessions, data, base, morning,
-                                {"financial_signal": base, "financial_reasons": reasons,
-                                 "morning_signal": morning}))
-    manifest = {
-        "start_decision_jst": args.start.isoformat(), "end_decision_jst": args.end.isoformat(),
-        "as_of_jst": args.as_of.isoformat(), "decision_time_jst": "10:30",
-        "shares": SHARES, "max_buy_debit_jpy": BUDGET, "cost_per_side": COST,
-        "calendar": str(args.calendar) if args.calendar else "200A daily timestamps",
-        "eligible_decisions": len(signals),
-        "morning_comparison": "evaluated_on_available_rows"
-        if any(row["morning_eligible"] and row["financial_signal"] is not None for row in results)
-        else "not_evaluated",
-        "market_surprise_complete_rows": sum(r["comparison"] == "market_surprise"
-                                             and r["eps_delta_jpy"] is not None
-                                             and r["op_delta_mjpy"] is not None for r in financial_rows
-                                             if "eps_delta_jpy" in r),
-        "daily_sha256": {code: series.sha256 for code, series in data.items()},
-        "fundamentals_sha256": hashlib.sha256(args.facts.read_bytes()).hexdigest(),
-        "intraday_sha256": hashlib.sha256(args.intraday.read_bytes()).hexdigest() if args.intraday else None,
-    }
-    args.out.mkdir(exist_ok=True, parents=True)
-    for name, rows in (("fundamentals", financial_rows), ("morning", morning_rows), ("returns", results),
-                       ("summary", summarize(results)), ("paired_summary", paired_summary(results))):
+        financial.append(dict(decision_jst=cutoffs[idx], **row))
+        if row["comparison"] != "order_yoy":
+            events[row["code"], idx].append(row)
+    candidates, observations, decisions = [], [], []
+    for (code, idx), rows in sorted(
+        events.items(), key=lambda item: (item[0][1], item[0][0])
+    ):
+        day = sessions[idx]
+        if day > end:
+            continue
+        buy, reason = signal(rows)
+        decisions.append(
+            dict(
+                code=code,
+                day=day,
+                candidate=buy,
+                reason=reason,
+                releases=len({r["available_at_jst"] for r in rows}),
+            )
+        )
+        if buy:
+            candidates.append(
+                dict(
+                    id=f"{day}-{code}",
+                    code=code,
+                    day=day,
+                    A=dict(
+                        first="buy",
+                        status="order",
+                        signal_day=day,
+                        entry=sessions[idx + 1] if idx + 1 < len(sessions) else None,
+                    ),
+                    B=plan(
+                        code, idx, sessions, events, data, bars, cfg, asof, observations
+                    ),
+                )
+            )
+    all_trades, curves, summaries, pairs, attribution, exclusions = (
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+    )
+    for months in [cfg["primary_months"], *cfg["secondary_months"]]:
+        for phase in ("development", "evaluation"):
+            selected = []
+            for c in candidates:
+                if (phase == "development") != (c["day"] < split):
+                    continue
+                j = bisect_left(sessions, month_later(c["day"], months))
+                target = sessions[j] if j < len(sessions) else None
+                if phase == "development" and (target is None or target >= split):
+                    exclusions.append(
+                        dict(
+                            id=c["id"],
+                            months=months,
+                            reason="purged_overlap",
+                            target=target,
+                        )
+                    )
+                    continue
+                event = dict(c, target=target)
+                # A pending candidate expires before an order could first fill after liquidation.
+                for strategy in ("A", "B"):
+                    p = event[strategy]
+                    if target and (
+                        p.get("entry", None)
+                        and p["entry"] > target
+                        or p.get("unknown_day", None)
+                        and p["unknown_day"] >= target
+                    ):
+                        event[strategy] = dict(first=p["first"], status="expired")
+                selected.append(event)
+            lo = start if phase == "development" else split
+            last_signal = split - timedelta(days=1) if phase == "development" else end
+            hi = min(asof, max([last_signal, *(c["target"] or asof for c in selected)]))
+            days = [d for d in sessions if lo <= d <= hi]
+            books = {}
+            terminal = {}
+            for strategy in ("A", "B"):
+                unknown, orders = defaultdict(list), defaultdict(list)
+                for c in selected:
+                    p = c[strategy]
+                    if p.get("unknown_day"):
+                        unknown[p["unknown_day"]].append(c["id"])
+                    if p.get("entry") and (
+                        not c["target"] or p["entry"] <= c["target"]
+                    ):
+                        orders[p["entry"]].append(c["id"])
+                trades, curve, summary = simulate(
+                    phase, strategy, months, days, selected, data, cfg, unknown, orders
+                )
+                all_trades.extend(trades)
+                curves.extend(curve)
+                summaries.append(summary)
+                terminal[strategy] = summary["final_equity"]
+                books[strategy] = {t["id"]: t for t in trades}
+            subset = []
+            for c in selected:
+                a, b = (books[k][c["id"]] for k in ("A", "B"))
+                mature = c["target"] is not None and c["target"] <= asof
+                delta = (
+                    b["pnl"] - a["pnl"]
+                    if mature and None not in (a["pnl"], b["pnl"])
+                    else None
+                )
+                diff = (
+                    None
+                    if b["decision"] in ("missing", None)
+                    else b["decision"] != "buy"
+                )
+                row = dict(
+                    phase=phase,
+                    months=months,
+                    id=c["id"],
+                    target=c["target"],
+                    different_first_decision=diff,
+                    A_status=a["status"],
+                    B_status=b["status"],
+                    A_pnl=a["pnl"],
+                    B_pnl=b["pnl"],
+                    delta_jpy=delta,
+                )
+                pairs.append(row)
+                subset.append(row)
+            known = [r for r in subset if r["delta_jpy"] is not None]
+            differing = [r["delta_jpy"] for r in known if r["different_first_decision"]]
+            # A cost or signal rejection by both strategies yields no observed purchase outcome.
+            bought = any("sold" in (r["A_status"], r["B_status"]) for r in known)
+            nav_diff = (
+                terminal["B"] - terminal["A"]
+                if None not in terminal.values()
+                and bought
+                and len(known) == len(selected)
+                else None
+            )
+            attribution.append(
+                dict(
+                    portfolio_delta_jpy=nav_diff,
+                    portfolio_return_difference_pp=100
+                    * nav_diff
+                    / cfg["initial_cash_jpy"]
+                    if nav_diff is not None
+                    else None,
+                    phase=phase,
+                    months=months,
+                    candidates=len(selected),
+                    overlap_groups=profile(selected),
+                    common_completed=len(known),
+                    different_decisions_observed=sum(
+                        r["different_first_decision"] is True for r in subset
+                    ),
+                    unknown_decisions=sum(
+                        r["different_first_decision"] is None for r in subset
+                    ),
+                    differing_with_outcome=len(differing),
+                    improvement_jpy=sum(max(v, 0) for v in differing)
+                    if known
+                    else None,
+                    deterioration_jpy=sum(min(v, 0) for v in differing)
+                    if known
+                    else None,
+                    total_paired_delta_jpy=sum(r["delta_jpy"] for r in known)
+                    if known
+                    else None,
+                    status=("evaluated" if len(known) == len(selected) else "partial")
+                    if bought
+                    else "not_evaluated",
+                )
+            )
+    args.out.mkdir(parents=True, exist_ok=True)
+    for name, rows in dict(
+        fundamentals=financial,
+        events=decisions,
+        morning=observations,
+        returns=all_trades,
+        equity=curves,
+        summary=summaries,
+        pairs=pairs,
+        paired_summary=attribution,
+        purged=exclusions,
+    ).items():
         write_csv(args.out / f"{name}.csv", rows)
-    (args.out / "run.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps(manifest, indent=2))
+    manifest = dict(
+        config=cfg,
+        config_sha256=digest(args.config),
+        calendar_sha256=digest(args.calendar),
+        rules_tried=1,
+        threshold_searches=0,
+        financial_event_days=len(decisions),
+        earnings_announcements=len(
+            {
+                (r["code"], r["available_at_jst"])
+                for r in financial
+                if r["comparison"] == "actual_vs_company"
+                and r["decision_jst"].date() <= end
+            }
+        ),
+        candidate_events=len(candidates),
+        facts_sha256=digest(args.facts),
+        daily_sha256={k: v.sha256 for k, v in data.items()},
+        intraday_sha256=digest(args.intraday) if args.intraday else None,
+        primary_evaluation=next(
+            r
+            for r in attribution
+            if r["phase"] == "evaluation" and r["months"] == cfg["primary_months"]
+        ),
+    )
+    (args.out / "run.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    print(json.dumps(manifest["primary_evaluation"], indent=2))
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--daily", type=Path, default=Path("data/raw"))
-    parser.add_argument("--facts", type=Path, default=Path("data/fundamentals.csv"))
-    parser.add_argument("--intraday", type=Path, help="point-in-time five minute CSV")
-    parser.add_argument("--calendar", type=Path, help="exchange session CSV, column: session")
-    parser.add_argument("--start", type=date.fromisoformat, default=date(2025, 11, 1))
-    parser.add_argument("--end", type=date.fromisoformat, default=date(2026, 5, 31))
-    parser.add_argument("--as-of", type=date.fromisoformat, default=date(2026, 11, 24))
-    parser.add_argument("--out", type=Path, default=Path("results"))
-    args = parser.parse_args()
-    if not args.start <= args.end <= args.as_of:
-        parser.error("need start <= end <= as-of")
-    run(args)
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=Path("strategy.json"))
+    parser.add_argument("--daily", type=Path, default=Path("data/raw"))
+    parser.add_argument("--facts", type=Path, default=Path("data/fundamentals.csv"))
+    parser.add_argument("--intraday", type=Path)
+    parser.add_argument("--calendar", type=Path, default=Path("data/sessions.csv"))
+    parser.add_argument("--out", type=Path, default=Path("results"))
+    run(parser.parse_args())

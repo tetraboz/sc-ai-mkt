@@ -1,0 +1,14 @@
+code,day,candidate,reason,releases
+5367,2025-11-05,True,actual_vs_company,1
+5542,2025-11-10,False,,1
+3446,2025-11-14,False,,1
+5381,2025-11-17,False,,1
+3446,2026-02-03,True,forecast_revision,1
+5367,2026-02-03,False,,1
+5542,2026-02-12,False,,1
+3446,2026-02-16,False,,1
+5381,2026-02-16,False,,1
+5367,2026-05-07,True,actual_vs_company,1
+3446,2026-05-15,False,,1
+5381,2026-05-15,False,,1
+5542,2026-05-15,False,,1
