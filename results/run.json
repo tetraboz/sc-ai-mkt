@@ -1,0 +1,22 @@
+{
+  "start_decision_jst": "2025-11-01",
+  "end_decision_jst": "2026-05-31",
+  "as_of_jst": "2026-11-24",
+  "decision_time_jst": "10:30",
+  "shares": 100,
+  "max_buy_debit_jpy": 120000,
+  "cost_per_side": 0.002,
+  "calendar": "200A daily timestamps",
+  "eligible_decisions": 13,
+  "morning_comparison": "not_evaluated",
+  "market_surprise_complete_rows": 0,
+  "daily_sha256": {
+    "5381": "89fb81248499ea96a82e1755417f6dfe41d60f2790f63090bd693c13686acaa6",
+    "5542": "845135daa8ee1b245096405ab2afafbd077ee1d48830a42eead8e003a4c3a59c",
+    "5367": "92ac8a32d00d67e822237da160d77f959104f051f48ab75845b0d65880c6bae6",
+    "3446": "3980c670f0d84c2b04034694820ff4cb93464fe17b47eda1411d702755379159",
+    "200A": "aecef7093dd1c33a49a40e59bb47834113986eae651ce4d4cf9b52af49218f7a"
+  },
+  "fundamentals_sha256": "af5bc7041ce9656693910bf94dede62c52c8f4dfe8c6178f63ac1f0a622f0488",
+  "intraday_sha256": null
+}

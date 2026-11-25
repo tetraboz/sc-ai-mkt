@@ -1,0 +1,7 @@
+strategy,months,common_opportunities,common_missing_exclusions,closed,mean_trade_net_pct,mean_opportunity_net_pct
+fundamentals,1,0,0,0,,
+fundamentals_and_morning,1,0,0,0,,
+fundamentals,3,0,0,0,,
+fundamentals_and_morning,3,0,0,0,,
+fundamentals,6,0,0,0,,
+fundamentals_and_morning,6,0,0,0,,
